@@ -1,0 +1,104 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Emotional State Schema",
+  "description": "Schema for ~/.hermes/emotional-state.json",
+  "type": "object",
+  "required": ["current_mood", "mood_intensity", "trend", "patterns", "significant_events", "last_interaction", "check_in_rules", "check_in_history"],
+  "properties": {
+    "current_mood": {
+      "type": "string",
+      "enum": ["happy", "neutral", "stressed", "tired", "frustrated", "excited", "unknown"],
+      "description": "Current detected mood of the user"
+    },
+    "mood_intensity": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Intensity of current mood from 0 (mild) to 1 (strong)"
+    },
+    "trend": {
+      "type": "string",
+      "enum": ["improving", "stable", "declining", "unknown"],
+      "description": "Mood trend over recent interactions"
+    },
+    "patterns": {
+      "type": "object",
+      "properties": {
+        "stress_days": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Days of week with most stress indicators"
+        },
+        "active_hours": {
+          "type": "object",
+          "properties": {
+            "start": {"type": "integer", "minimum": 0, "maximum": 23},
+            "end": {"type": "integer", "minimum": 0, "maximum": 23}
+          },
+          "description": "Typical active hours"
+        },
+        "avg_message_length": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Average message length in characters"
+        },
+        "common_topics": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Frequently discussed topics"
+        },
+        "response_pattern": {
+          "type": "string",
+          "enum": ["quick", "normal", "slow", "irregular"],
+          "description": "Typical response time pattern"
+        }
+      }
+    },
+    "significant_events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["timestamp", "type", "description"],
+        "properties": {
+          "timestamp": {"type": "number"},
+          "type": {"type": "string", "enum": ["mood_shift", "stress_spike", "achievement", "long_silence", "late_night", "emotional_event"]},
+          "description": {"type": "string"},
+          "mood": {"type": "string"},
+          "topic": {"type": "string"}
+        }
+      }
+    },
+    "last_interaction": {
+      "type": "object",
+      "properties": {
+        "timestamp": {"type": "number"},
+        "mood": {"type": "string"},
+        "topic": {"type": "string"},
+        "duration": {"type": "number", "description": "Duration in seconds"}
+      }
+    },
+    "check_in_rules": {
+      "type": "object",
+      "properties": {
+        "min_hours_between": {"type": "number", "default": 12},
+        "max_hours_silence": {"type": "number", "default": 24},
+        "escalation_hours": {"type": "number", "default": 48},
+        "quiet_hours_start": {"type": "integer", "minimum": 0, "maximum": 23, "default": 23},
+        "quiet_hours_end": {"type": "integer", "minimum": 0, "maximum": 23, "default": 7}
+      }
+    },
+    "check_in_history": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["timestamp", "type"],
+        "properties": {
+          "timestamp": {"type": "number"},
+          "type": {"type": "string", "enum": ["normal", "high_priority", "escalation"]},
+          "message_sent": {"type": "string"},
+          "topic_ref": {"type": "string"}
+        }
+      }
+    }
+  }
+}

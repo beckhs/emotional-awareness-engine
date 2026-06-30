@@ -1,0 +1,6 @@
+# No external dependencies required.
+# The Emotional Awareness Engine uses only Python standard library modules:
+#
+#   json, os, time, re, sqlite3, pathlib, collections, unittest, logging
+#
+# These are all included with Python 3.11+.
