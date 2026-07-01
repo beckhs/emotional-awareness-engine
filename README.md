@@ -47,7 +47,7 @@ See [How It Works](docs/how-it-works.md) for the full architecture deep-dive.
 
 ```bash
 # Clone
-git clone https://github.com/YOUR_USERNAME/emotional-awareness-engine.git
+git clone https://github.com/beckhs/emotional-awareness-engine.git
 cd emotional-awareness-engine
 
 # Verify (no dependencies to install)
@@ -101,7 +101,7 @@ Recent events: 2
 **Requirements:** Python 3.11+, Linux or macOS. That's it.
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/emotional-awareness-engine.git
+git clone https://github.com/beckhs/emotional-awareness-engine.git
 cd emotional-awareness-engine
 python3 -m unittest test_engine.py -v
 ```
@@ -152,7 +152,7 @@ version adds the outreach layer: generating emotionally-aware messages,
 validating them for quality, and delivering them through your messaging
 channels.
 
-**[Get the Premium Version →](https://gumroad.com/l/emotional-awareness-engine)**
+**Premium version coming soon on [Gumroad](https://beckvs.gumroad.com) — includes full proactive outreach engine, emotional-intelligence skill v2.0, academic paper, and complete documentation.**
 
 ## Academic Foundation
 
