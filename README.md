@@ -152,7 +152,7 @@ version adds the outreach layer: generating emotionally-aware messages,
 validating them for quality, and delivering them through your messaging
 channels.
 
-**Premium version coming soon on [Gumroad](https://beckvs.gumroad.com) — includes full proactive outreach engine, emotional-intelligence skill v2.0, academic paper, and complete documentation.**
+****[Get the Premium Version →](https://beckvs.gumroad.com/l/gkgec)****
 
 ## Academic Foundation
 
