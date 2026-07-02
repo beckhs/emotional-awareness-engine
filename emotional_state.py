@@ -1,8 +1,5 @@
 """
-emotional_state.py — Manages the emotional state file at ~/.hermes/emotional-state.json
-
-Provides load/save, mood updates with trend calculation, significant event tracking,
-and check-in decision logic.
+emotional_state.py — Gestiona el archivo de estado emocional en ~/.hermes/emotional-state.json
 """
 import json
 import os
@@ -36,12 +33,17 @@ DEFAULT_STATE = {
         "quiet_hours_start": 23,
         "quiet_hours_end": 7
     },
-    "check_in_history": []
+    "check_in_history": [],
+    "spam_protection": {
+        "consecutive_unanswered": 0,
+        "last_beck_message": 0,
+        "final_message_sent": False
+    }
 }
 
 
 def load_state() -> dict:
-    """Load emotional state from JSON file. Creates default if missing."""
+    """Carga el estado emocional desde el archivo JSON. Si no existe, crea uno por defecto."""
     if STATE_PATH.exists():
         try:
             with open(STATE_PATH, "r", encoding="utf-8") as f:
@@ -57,14 +59,14 @@ def load_state() -> dict:
 
 
 def save_state(state: dict) -> None:
-    """Save emotional state to JSON file."""
+    """Guarda el estado emocional al archivo JSON."""
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(STATE_PATH, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2, ensure_ascii=False)
 
 
 def update_mood(state: dict, mood: str, intensity: float) -> dict:
-    """Update current mood and calculate trend."""
+    """Actualiza el mood actual y calcula la tendencia."""
     previous_mood = state.get("current_mood", "unknown")
     state["current_mood"] = mood
     state["mood_intensity"] = max(0.0, min(1.0, intensity))
@@ -85,7 +87,7 @@ def update_mood(state: dict, mood: str, intensity: float) -> dict:
     # Detect mood shift as significant event
     if previous_mood != mood and previous_mood != "unknown":
         add_event(state, "mood_shift",
-                  f"Shift from {previous_mood} to {mood}",
+                  f"Cambio de {previous_mood} a {mood}",
                   mood=mood)
 
     return state
@@ -93,7 +95,7 @@ def update_mood(state: dict, mood: str, intensity: float) -> dict:
 
 def add_event(state: dict, event_type: str, description: str,
               mood: str = "", topic: str = "") -> None:
-    """Add a significant event to the history."""
+    """Agrega un evento significativo al historial."""
     event = {
         "timestamp": time.time(),
         "type": event_type,
@@ -114,7 +116,7 @@ def add_event(state: dict, event_type: str, description: str,
 
 
 def get_check_in_status(state: dict) -> dict:
-    """Return the current check-in status."""
+    """Retorna el estado actual de los check-ins."""
     now = time.time()
     history = state.get("check_in_history", [])
     rules = state.get("check_in_rules", DEFAULT_STATE["check_in_rules"])
@@ -152,32 +154,32 @@ def get_check_in_status(state: dict) -> dict:
 
 
 def should_check_in(state: dict) -> dict:
-    """Determine whether a check-in should happen and what type."""
+    """Determina si se debe hacer un check-in y de qué tipo."""
     status = get_check_in_status(state)
     rules = state.get("check_in_rules", DEFAULT_STATE["check_in_rules"])
     bad_moods = {"stressed", "frustrated", "tired"}
 
     # Never in quiet hours
     if status["in_quiet_hours"]:
-        return {"should": False, "reason": "quiet hours"}
+        return {"should": False, "reason": "horario silencioso"}
 
     # Minimum time between check-ins
     min_hours = rules.get("min_hours_between", 12)
     if status["hours_since_last_check_in"] < min_hours:
-        return {"should": False, "reason": "recent check-in"}
+        return {"should": False, "reason": "check-in reciente"}
 
     # High priority: bad mood + 8+ hours
     if status["last_mood"] in bad_moods and status["hours_since_last_interaction"] >= 8:
-        return {"should": True, "type": "high_priority", "reason": "negative mood for 8+ hours"}
+        return {"should": True, "type": "high_priority", "reason": "mood negativo hace 8+ horas"}
 
     # Escalation: 48+ hours silence
     escalation_hours = rules.get("escalation_hours", 48)
     if status["hours_since_last_interaction"] >= escalation_hours:
-        return {"should": True, "type": "escalation", "reason": "48+ hours without interaction"}
+        return {"should": True, "type": "escalation", "reason": "48+ horas sin interacción"}
 
     # Normal check-in: 24+ hours
     max_silence = rules.get("max_hours_silence", 24)
     if status["hours_since_last_interaction"] >= max_silence:
-        return {"should": True, "type": "normal", "reason": "24+ hours without interaction"}
+        return {"should": True, "type": "normal", "reason": "24+ horas sin interacción"}
 
-    return {"should": False, "reason": "not needed"}
+    return {"should": False, "reason": "no necesario"}

@@ -1,6 +1,6 @@
 """
-conversation_analyzer.py — Analyzes recent conversations from ~/.hermes/state.db
-Detects emotions, patterns, and significant events using keyword-based analysis.
+conversation_analyzer.py — Analiza conversaciones recientes de ~/.hermes/state.db
+Detecta emociones, patrones y eventos significativos.
 """
 import sqlite3
 import time
@@ -10,39 +10,69 @@ from collections import Counter
 
 DB_PATH = Path.home() / ".hermes" / "state.db"
 
-# Mood keyword definitions (English)
+# System message prefixes — these are NOT real user messages
+SYSTEM_MESSAGE_PREFIXES = [
+    "[IMPORTANT:",
+    "[OUT-OF-BAND",
+    "[ASYNC DELEGATION",
+    "Eres Ivi",
+    "You are",
+    "Cronjob Response:",
+    "[Replying to:"
+]
+
+SYSTEM_MESSAGE_CONTAINS = [
+    "Cronjob Response",
+    "ASYNC DELEGATION BATCH COMPLETE",
+    "The user has invoked",
+]
+
+
+def _is_system_message(content: str) -> bool:
+    """Detecta si un mensaje es del sistema/asistente, no del usuario real."""
+    if not content:
+        return True
+    for prefix in SYSTEM_MESSAGE_PREFIXES:
+        if content.startswith(prefix):
+            return True
+    for pattern in SYSTEM_MESSAGE_CONTAINS:
+        if pattern in content:
+            return True
+    return False
+
+
+# Mood keyword definitions (Peruvian Spanish)
 MOOD_KEYWORDS = {
     "stressed": [
-        "can't do this", "impossible", "giving up", "overwhelmed", "exhausted",
-        "stressed", "can't take it", "so stressed", "feeling bad", "burned out",
-        "falling apart", "can't handle", "pressure", "deadline", "breaking down",
-        "at my limit", "too much", "drowning"
+        "no puedo", "imposible", "ya fue", "qué mierda", "agotado",
+        "estresado", "no doy más", "qué estrés", "estoy mal", "reventado",
+        "colapsado", "no aguanto", "presión", "deadline"
     ],
     "happy": [
-        "awesome", "perfect", "it worked", "nailed it", "well done",
-        "excellent", "great news", "amazing", "fantastic", "brilliant",
-        "love it", "super", "congratulations", "cheerful", "stoked"
+        "genial", "perfecto", "funcionó", "logré", "bien hecho",
+        "excelente", "qué bien", "bakan", "chévere", "padre",
+        "genial", "super", "felicidades", "alegre"
     ],
     "tired": [
-        "tired", "exhausted", "can't sleep", "sleepy", "worn out",
-        "no energy", "drained", "fatigued", "drowsy", "sluggish",
-        "up all night", "burned out", "spent"
+        "cansado", "madrugada", "no duermo", "sueño", "dormido",
+        "agotado", "sin energía", "flojera", "modorra", "somnoliento",
+        "desvelado", "noche"
     ],
     "frustrated": [
-        "again", "not working", "error", "broken", "bug",
-        "damn it", "so annoying", "useless", "garbage", "waste of time",
-        "frustrated", "fed up", "enough", "keeps failing", "hate this"
+        "otra vez", "no funciona", "error", "falla", "bug",
+        "maldita sea", "qué fastidio", "no sirve", "basura", "inútil",
+        "frustrado", "harto", "ya basta"
     ],
     "excited": [
-        "incredible", "wow", "unbelievable", "mind-blowing", "insane",
-        "this is wild", "impressive", "cool", "sick", "incredible",
-        "astonishing", "fantastic", "genius", "let's go", "hell yeah"
+        "increíble", "wow", "no manches", "alucinante", "brutal",
+        "qué locura", "impresionante", "cool", "top", "increible",
+        "asombroso", "fantástico", "qué crack", "vamos"
     ]
 }
 
 
 def get_recent_sessions(hours: int = 48) -> list[dict]:
-    """Get recent sessions with their messages from state.db."""
+    """Obtiene sesiones recientes con sus mensajes del state.db."""
     cutoff = time.time() - (hours * 3600)
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
@@ -70,7 +100,7 @@ def get_recent_sessions(hours: int = 48) -> list[dict]:
 
 
 def extract_emotional_keywords(text: str) -> dict[str, list[str]]:
-    """Extract emotional keywords from text. Returns dict mapping mood -> found keywords."""
+    """Extrae keywords emocionales de un texto. Retorna dict con mood -> lista de keywords encontrados."""
     if not text:
         return {}
     text_lower = text.lower()
@@ -83,27 +113,33 @@ def extract_emotional_keywords(text: str) -> dict[str, list[str]]:
 
 
 def analyze_conversation_mood(messages: list[dict]) -> dict:
-    """Analyze the overall mood of a conversation based on keyword frequency."""
+    """Analiza el mood general de una conversación basado en keywords."""
     mood_scores = Counter()
     total_user_msgs = 0
+    msgs_with_keywords = 0
 
     for msg in messages:
         if msg.get("role") != "user":
             continue
         content = msg.get("content", "")
-        if not content:
+        if not content or _is_system_message(content):
             continue
         total_user_msgs += 1
         keywords = extract_emotional_keywords(content)
+        if keywords:
+            msgs_with_keywords += 1
         for mood, matches in keywords.items():
-            mood_scores[mood] += len(matches)
+            # Weight: repeated keywords in same message = higher intensity
+            mood_scores[mood] += len(matches) * (1 + 0.5 * (len(matches) - 1))
 
     if not mood_scores:
         return {"mood": "neutral", "intensity": 0.0, "scores": {}}
 
     dominant_mood = mood_scores.most_common(1)[0][0]
     max_score = mood_scores.most_common(1)[0][1]
-    intensity = min(1.0, max_score / max(total_user_msgs, 1))
+    # Intensity = density of emotional keywords in messages that HAVE them
+    # This rewards concentrated emotion vs scattered keywords
+    intensity = min(1.0, max_score / max(msgs_with_keywords, 1) * 0.4)
 
     return {
         "mood": dominant_mood,
@@ -113,7 +149,7 @@ def analyze_conversation_mood(messages: list[dict]) -> dict:
 
 
 def detect_significant_events(messages: list[dict]) -> list[dict]:
-    """Detect significant events in a conversation."""
+    """Detecta eventos significativos en una conversación."""
     events = []
     seen_late_night = set()
     bad_moods = {"stressed", "frustrated", "tired"}
@@ -122,7 +158,7 @@ def detect_significant_events(messages: list[dict]) -> list[dict]:
         if msg.get("role") != "user":
             continue
         content = msg.get("content", "")
-        if not content:
+        if not content or _is_system_message(content):
             continue
 
         keywords = extract_emotional_keywords(content)
@@ -139,7 +175,7 @@ def detect_significant_events(messages: list[dict]) -> list[dict]:
                     events.append({
                         "timestamp": ts,
                         "type": "late_night",
-                        "description": f"Activity at {hour}:00",
+                        "description": f"Actividad a las {hour}:00",
                         "mood": "tired"
                     })
 
@@ -149,25 +185,28 @@ def detect_significant_events(messages: list[dict]) -> list[dict]:
                 events.append({
                     "timestamp": ts,
                     "type": "stress_spike",
-                    "description": f"Multiple {mood} indicators: {', '.join(keywords[mood])}",
+                    "description": f"Múltiples indicadores de {mood}: {', '.join(keywords[mood])}",
                     "mood": mood
                 })
 
-        # Detect achievements
-        if "happy" in keywords or "excited" in keywords:
+        # Detect achievements (only from REAL user messages with clear emotional content)
+        if ("happy" in keywords or "excited" in keywords) and len(content) > 20:
             events.append({
                 "timestamp": ts,
                 "type": "achievement",
-                "description": f"Achievement detected: {content[:80]}",
-                "mood": keywords.get("happy", keywords.get("excited", []))[0] if keywords.get("happy") or keywords.get("excited") else "happy"
+                "description": f"Logro detectado: {content[:80]}",
+                "mood": keywords.get("happy", keywords.get("excited", ["happy"]))[0]
             })
 
     return events
 
 
 def detect_communication_patterns(messages: list[dict]) -> dict:
-    """Detect communication patterns: active hours, message length, topics."""
-    user_messages = [m for m in messages if m.get("role") == "user" and m.get("content")]
+    """Detecta patrones de comunicación: horarios, longitud, temas."""
+    user_messages = [m for m in messages
+                     if m.get("role") == "user"
+                     and m.get("content")
+                     and not _is_system_message(m.get("content", ""))]
 
     if not user_messages:
         return {
@@ -190,9 +229,9 @@ def detect_communication_patterns(messages: list[dict]) -> dict:
     # Topic extraction (simple: find common long words)
     all_text = " ".join(m.get("content", "") for m in user_messages).lower()
     words = re.findall(r'\b[a-záéíóúñ]{5,}\b', all_text)
-    stopwords = {"about", "would", "could", "should", "their", "there", "where",
-                 "which", "these", "those", "after", "being", "other", "every",
-                 "through", "under", "again", "doing", "hello", "thanks", "great"}
+    stopwords = {"puede", "tiene", "hacer", "donde", "cuando", "porque", "pero",
+                 "como", "esta", "estos", "estas", "para", "todo", "bien",
+                 "hola", "sobre", "también", "entre", "otro", "otra", "desde"}
     topic_words = [w for w in words if w not in stopwords]
     common_topics = [w for w, _ in Counter(topic_words).most_common(5)]
 
