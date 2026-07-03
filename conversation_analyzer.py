@@ -25,6 +25,22 @@ SYSTEM_MESSAGE_CONTAINS = [
     "Cronjob Response",
     "ASYNC DELEGATION BATCH COMPLETE",
     "The user has invoked",
+    "Read arxiv abstract",
+    "extract autonomous",
+    "You are running as a scheduled cron",
+    "DELIVER",
+    "hermes chat -q",
+    "tool_calls",
+    "function_call",
+    "Background process",
+    "terminated by process.kill",
+    "OUT-OF-BAND USER MESSAGE",
+    "[IMPORTANT",
+    "Exit code",
+    "Command:",
+    "notify_on_complete",
+    "session_id",
+    "hermes_results",
 ]
 
 
@@ -50,8 +66,9 @@ MOOD_KEYWORDS = {
     ],
     "happy": [
         "genial", "perfecto", "funcionó", "logré", "bien hecho",
-        "excelente", "qué bien", "bakan", "chévere", "padre",
-        "genial", "super", "felicidades", "alegre"
+        "excelente", "qué bien", "increíble", "fantástico",
+        "super", "felicidades", "alegre", "feliz", "contento",
+        "maravilloso", "estupendo", "magnífico"
     ],
     "tired": [
         "cansado", "madrugada", "no duermo", "sueño", "dormido",
@@ -59,7 +76,7 @@ MOOD_KEYWORDS = {
         "desvelado", "noche"
     ],
     "frustrated": [
-        "otra vez", "no funciona", "error", "falla", "bug",
+        "otra vez", "no funciona", "error", "falla", "falló", "fallo", "bug",
         "maldita sea", "qué fastidio", "no sirve", "basura", "inútil",
         "frustrado", "harto", "ya basta"
     ],
@@ -117,6 +134,7 @@ def analyze_conversation_mood(messages: list[dict]) -> dict:
     mood_scores = Counter()
     total_user_msgs = 0
     msgs_with_keywords = 0
+    now = time.time()
 
     for msg in messages:
         if msg.get("role") != "user":
@@ -128,9 +146,19 @@ def analyze_conversation_mood(messages: list[dict]) -> dict:
         keywords = extract_emotional_keywords(content)
         if keywords:
             msgs_with_keywords += 1
+
+        # Recency weighting: weight = 0.5 ** (age_hours / 12)
+        ts = msg.get("timestamp", 0)
+        if ts and ts > 0:
+            age_hours = max(0, (now - ts) / 3600)
+            recency_weight = 0.5 ** (age_hours / 12)
+        else:
+            recency_weight = 1.0
+
         for mood, matches in keywords.items():
             # Weight: repeated keywords in same message = higher intensity
-            mood_scores[mood] += len(matches) * (1 + 0.5 * (len(matches) - 1))
+            weight = len(matches) * (1 + 0.5 * (len(matches) - 1))
+            mood_scores[mood] += weight * recency_weight
 
     if not mood_scores:
         return {"mood": "neutral", "intensity": 0.0, "scores": {}}
@@ -148,11 +176,50 @@ def analyze_conversation_mood(messages: list[dict]) -> dict:
     }
 
 
+def analyze_mood_v3(messages: list[dict], detector=None) -> dict:
+    """v3.0: Analyze conversation mood using EmotionDetector (Strategy pattern).
+
+    Falls back to keyword-based analyze_conversation_mood() if no detector provided.
+    Returns same dict format for backward compatibility.
+    """
+    if detector is None:
+        return analyze_conversation_mood(messages)
+
+    result = detector.detect_conversation(messages, recency_weighted=True)
+    return {
+        "mood": result.mood,
+        "intensity": result.intensity,
+        "scores": result.scores,
+        "confidence": result.confidence,
+        "source": result.source,
+        "is_ironic": result.is_ironic,
+    }
+
+
 def detect_significant_events(messages: list[dict]) -> list[dict]:
     """Detecta eventos significativos en una conversación."""
     events = []
     seen_late_night = set()
     bad_moods = {"stressed", "frustrated", "tired"}
+
+    # Patterns for emotional declarations, worries, celebrations, vulnerability
+    emotional_declaration_re = re.compile(
+        r"estoy (contento|triste|feliz|enojado|furioso|estresado|asustado|preocupado|ansioso|deprimido|mal|bien|agotado|cansado|frustrado)"
+        r"|me siento (contento|triste|feliz|enojado|furioso|estresado|asustado|preocupado|ansioso|deprimido|mal|bien|agotado|cansado|frustrado|solo|perdido)",
+        re.IGNORECASE
+    )
+    worry_re = re.compile(
+        r"me preocupa|tengo miedo de|no sé si|me da miedo|estoy preocupado",
+        re.IGNORECASE
+    )
+    celebration_re = re.compile(
+        r"lo logré|funcionó|por fin|lo conseguí|ya quedó|ya está listo",
+        re.IGNORECASE
+    )
+    vulnerability_re = re.compile(
+        r"necesito ayuda|no sé qué hacer|estoy perdido|no sé qué hacer|no aguanto más",
+        re.IGNORECASE
+    )
 
     for msg in messages:
         if msg.get("role") != "user":
@@ -162,9 +229,9 @@ def detect_significant_events(messages: list[dict]) -> list[dict]:
             continue
 
         keywords = extract_emotional_keywords(content)
+        ts = msg.get("timestamp", 0)
 
         # Detect late night activity (deduplicate by hour)
-        ts = msg.get("timestamp", 0)
         if ts:
             hour = int(time.strftime("%H", time.localtime(ts)))
             if hour >= 1 and hour <= 5:
@@ -196,6 +263,42 @@ def detect_significant_events(messages: list[dict]) -> list[dict]:
                 "type": "achievement",
                 "description": f"Logro detectado: {content[:80]}",
                 "mood": keywords.get("happy", keywords.get("excited", ["happy"]))[0]
+            })
+
+        # Detect direct emotional declarations
+        if emotional_declaration_re.search(content):
+            events.append({
+                "timestamp": ts,
+                "type": "emotional_declaration",
+                "description": f"Declaración emocional: {content[:80]}",
+                "mood": "emotional"
+            })
+
+        # Detect worries
+        if worry_re.search(content):
+            events.append({
+                "timestamp": ts,
+                "type": "worry",
+                "description": f"Preocupación detectada: {content[:80]}",
+                "mood": "stressed"
+            })
+
+        # Detect celebrations
+        if celebration_re.search(content):
+            events.append({
+                "timestamp": ts,
+                "type": "celebration",
+                "description": f"Celebración: {content[:80]}",
+                "mood": "happy"
+            })
+
+        # Detect vulnerability
+        if vulnerability_re.search(content):
+            events.append({
+                "timestamp": ts,
+                "type": "vulnerability",
+                "description": f"Vulnerabilidad: {content[:80]}",
+                "mood": "stressed"
             })
 
     return events

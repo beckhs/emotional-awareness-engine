@@ -1,0 +1,58 @@
+# cosmo-watcher.service — systemd unit for the Cosmo Emotional Watcher Daemon
+#
+# Install:
+#   sudo cp cosmo-watcher.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now cosmo-watcher
+#
+# Logs:
+#   journalctl -u cosmo-watcher -f
+#   tail -f ~/.hermes/logs/cosmo-watcher.log
+#
+# Status:
+#   systemctl status cosmo-watcher
+#   python3 daemon.py --status
+
+[Unit]
+Description=Cosmo Emotional Watcher Daemon
+Documentation=https://github.com/nousresearch/hermes-agent
+After=network.target
+Wants=network.target
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/python3 /root/ivi-proactive/emotional-engine/daemon.py --interval 15
+ExecReload=/bin/kill -HUP $MAINPID
+WorkingDirectory=/root/ivi-proactive/emotional-engine
+
+# Restart policy: always restart on failure, with backoff
+Restart=always
+RestartSec=10
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Watchdog: if daemon doesn't ping in 120s, kill and restart
+WatchdogSec=120
+
+# Environment
+Environment=PATH=/root/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+
+# Logging (stdout/stderr → journal)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cosmo-watcher
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/root/.hermes /root/ivi-proactive /tmp
+ProtectHome=false
+PrivateTmp=true
+
+# Resource limits
+MemoryMax=4G
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target

@@ -68,8 +68,15 @@ def save_state(state: dict) -> None:
 def update_mood(state: dict, mood: str, intensity: float) -> dict:
     """Actualiza el mood actual y calcula la tendencia."""
     previous_mood = state.get("current_mood", "unknown")
+    state["previous_mood"] = previous_mood
     state["current_mood"] = mood
     state["mood_intensity"] = max(0.0, min(1.0, intensity))
+
+    # Flag mood change for check-in triggers
+    if previous_mood != mood and previous_mood != "unknown":
+        state["mood_changed"] = True
+    else:
+        state["mood_changed"] = state.get("mood_changed", False)
 
     # Calculate trend
     bad_moods = {"stressed", "frustrated", "tired"}
@@ -129,7 +136,11 @@ def get_check_in_status(state: dict) -> dict:
     hours_since_last_check_in = (now - last_check_in_ts) / 3600 if last_check_in_ts > 0 else 999
     hours_since_interaction = (now - last_interaction.get("timestamp", 0)) / 3600 if last_interaction.get("timestamp", 0) > 0 else 999
 
-    current_hour = int(time.strftime("%H"))
+    # Fix F3: quiet hours use user timezone (America/Lima, UTC-5)
+    # Use time.gmtime(now) so tests can mock emotional_state.time
+    utc_hour = int(time.strftime('%H', time.gmtime(now)))
+    # Peru = UTC-5
+    current_hour = (utc_hour - 5) % 24
     quiet_start = rules.get("quiet_hours_start", 23)
     quiet_end = rules.get("quiet_hours_end", 7)
 
@@ -153,33 +164,86 @@ def get_check_in_status(state: dict) -> dict:
     }
 
 
-def should_check_in(state: dict) -> dict:
-    """Determina si se debe hacer un check-in y de qué tipo."""
+STRONG_EMOTION_KEYWORDS = [
+    "estoy estresado", "estoy asustado", "me preocupa", "necesito",
+    "no sé qué hacer", "no puedo más", "estoy desbordado",
+    "me siento mal", "estoy angustiado", "estoy ansioso",
+    "tengo miedo", "estoy preocupado", "no aguanto",
+    "estoy colapsado", "me quiero morir", "estoy hundido",
+]
+
+
+def should_check_in(state: dict, recent_messages: list = None) -> dict:
+    """Determina si se debe hacer un check-in y de qué tipo.
+
+    Args:
+        state: Emotional state dict.
+        recent_messages: Optional list of recent message dicts with 'role' and 'content'.
+    """
+    import logging as _logging
+    _log = _logging.getLogger("emotional-engine")
     status = get_check_in_status(state)
     rules = state.get("check_in_rules", DEFAULT_STATE["check_in_rules"])
     bad_moods = {"stressed", "frustrated", "tired"}
 
     # Never in quiet hours
     if status["in_quiet_hours"]:
+        _log.info("Check-in rechazado: horario silencioso")
         return {"should": False, "reason": "horario silencioso"}
 
-    # Minimum time between check-ins
+    # === NEW: Strong emotion keywords trigger (bypasses min_hours) ===
+    if recent_messages:
+        for msg in recent_messages:
+            if msg.get("role") != "user":
+                continue
+            content = (msg.get("content", "") or "").lower()
+            for keyword in STRONG_EMOTION_KEYWORDS:
+                if keyword in content:
+                    _log.info(f"Check-in activado por keyword emocional fuerte: '{keyword}'")
+                    return {"should": True, "type": "emotion_keyword",
+                            "reason": f"keyword emocional fuerte detectada: '{keyword}'"}
+
+    # === NEW: Mood change trigger (bypasses min_hours for significant shifts) ===
+    if state.get("mood_changed"):
+        current = state.get("current_mood", "unknown")
+        previous = state.get("previous_mood", "unknown")
+        # Only trigger for significant shifts (to/from bad moods)
+        if current in bad_moods or previous in bad_moods:
+            _log.info(f"Check-in activado por cambio de mood: {previous} → {current}")
+            # Reset the flag so we don't re-trigger
+            state["mood_changed"] = False
+            return {"should": True, "type": "mood_change",
+                    "reason": f"cambio de mood: {previous} → {current}"}
+
+    # Minimum time between check-ins (only blocks non-urgent triggers)
     min_hours = rules.get("min_hours_between", 12)
     if status["hours_since_last_check_in"] < min_hours:
+        _log.info(f"Check-in rechazado: check-in reciente ({status['hours_since_last_check_in']:.1f}h < {min_hours}h)")
         return {"should": False, "reason": "check-in reciente"}
 
-    # High priority: bad mood + 8+ hours
-    if status["last_mood"] in bad_moods and status["hours_since_last_interaction"] >= 8:
+    # === CHANGED: High priority: bad mood + intensity > 0.3 (was implicit 8h wait) ===
+    mood_intensity = state.get("mood_intensity", 0.0)
+    if status["last_mood"] in bad_moods and mood_intensity > 0.3:
+        _log.info(f"Check-in activado: mood negativo ({status['last_mood']}) con intensidad {mood_intensity}")
         return {"should": True, "type": "high_priority", "reason": "mood negativo hace 8+ horas"}
+
+    # High priority: bad mood + 4+ hours (lowered from 8)
+    if status["last_mood"] in bad_moods and status["hours_since_last_interaction"] >= 4:
+        _log.info(f"Check-in activado: mood negativo ({status['last_mood']}) hace {status['hours_since_last_interaction']:.1f}h")
+        return {"should": True, "type": "high_priority", "reason": f"mood negativo hace {status['hours_since_last_interaction']:.0f}+ horas"}
 
     # Escalation: 48+ hours silence
     escalation_hours = rules.get("escalation_hours", 48)
     if status["hours_since_last_interaction"] >= escalation_hours:
+        _log.info(f"Check-in activado: escalación ({status['hours_since_last_interaction']:.0f}h sin interacción)")
         return {"should": True, "type": "escalation", "reason": "48+ horas sin interacción"}
 
     # Normal check-in: 24+ hours
     max_silence = rules.get("max_hours_silence", 24)
     if status["hours_since_last_interaction"] >= max_silence:
+        _log.info(f"Check-in activado: silencio prolongado ({status['hours_since_last_interaction']:.0f}h)")
         return {"should": True, "type": "normal", "reason": "24+ horas sin interacción"}
 
+    _log.info(f"Check-in rechazado: no necesario (mood={status['last_mood']}, "
+              f"intensidad={mood_intensity}, horas_desde_interacción={status['hours_since_last_interaction']:.1f})")
     return {"should": False, "reason": "no necesario"}

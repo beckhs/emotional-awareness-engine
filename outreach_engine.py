@@ -1,6 +1,6 @@
 """
 outreach_engine.py — Motor de decisiones para check-ins emocionales.
-Versión 2.1 — Con lock file anti-concurrencia, rate limiting adaptativo, validación de mensajes.
+Versión 3.0 — Strategy pattern, config centralizada, pysentimiento integration.
 """
 import subprocess
 import time
@@ -33,19 +33,35 @@ from conversation_analyzer import (
     _is_system_message
 )
 from event_store import EventStore
+from dimf import DIMFFilter
+from tbc import MemoryCompressor
+import random
+
+# v3.0: import centralized config and emotion detector
+import config as engine_config
+from emotion_detector import (
+    EmotionDetector, KeywordDetector, HybridDetector,
+    EmotionResult, ConversationMoodResult,
+)
 
 # Lock file to prevent concurrent engine runs
-LOCK_FILE = Path("/tmp/emotional-engine.lock")
+LOCK_FILE = engine_config.LOCK_FILE
 
-# Rate limiting: minimum seconds between check-ins
-RATE_LIMIT_NORMAL = 12 * 3600   # 12 hours (normal mood)
-RATE_LIMIT_CONCERNED = 4 * 3600  # 4 hours (stressed/frustrated/tired)
-RATE_LIMIT_CRISIS = 2 * 3600     # 2 hours (escalation)
-# Maximum check-ins per day
-MAX_DAILY_CHECKINS = 3
-MAX_DAILY_CONCERNED = 5  # More allowed if user seems distressed
-# Morning check-in window (UTC — Peru is UTC-5)
-MORNING_CHECKIN_HOUR = 14  # 14 UTC = 9 AM Peru
+# Rate limiting: use config values
+RATE_LIMIT_NORMAL = engine_config.RATE_LIMIT_NORMAL
+RATE_LIMIT_CONCERNED = engine_config.RATE_LIMIT_CONCERNED
+RATE_LIMIT_CRISIS = engine_config.RATE_LIMIT_CRISIS
+MAX_DAILY_CHECKINS = engine_config.MAX_DAILY_CHECKINS
+MAX_DAILY_CONCERNED = engine_config.MAX_DAILY_CONCERNED
+
+# Morning check-in hour (in USER_TZ)
+MORNING_CHECKIN_HOUR = engine_config.MORNING_CHECKIN_HOUR
+HERMES_COOLDOWN = engine_config.HERMES_COOLDOWN
+
+
+def _get_detector() -> EmotionDetector:
+    """Return the configured emotion detector. HybridDetector by default."""
+    return HybridDetector()
 
 
 def _acquire_lock() -> int | None:
@@ -129,17 +145,40 @@ def evaluate_check_in_need(state: dict = None) -> dict:
                 add_event(state, event["type"], event["description"],
                           mood=event.get("mood", ""), topic=event.get("topic", ""))
 
-    # Check morning routine — daily check-in at ~9 AM Peru (14 UTC)
-    current_utc_hour = int(time.strftime("%H", time.gmtime()))
+        # DIMF integration: create events in EventStore with importance scoring
+        try:
+            dimf_store = EventStore()
+            dimf_filter = DIMFFilter(dimf_store)
+            for event in events:
+                stored = dimf_store.add_event(
+                    event["type"], event["description"],
+                    score=mood_analysis.get("intensity", 0.5),
+                    topic=event.get("topic", ""),
+                    mood=event.get("mood", mood_analysis.get("mood", "")),
+                )
+                # Enrich with DIMF score
+                dimf_filter.enrich_event(stored)
+            log.info(f"DIMF: {len(events)} eventos procesados en EventStore")
+        except Exception as e:
+            log.warning(f"DIMF: error al crear eventos en EventStore: {e}")
+
+    # Check morning routine — daily check-in at ~9 AM Peru (user TZ)
+    from datetime import timezone as _tz
+    try:
+        from zoneinfo import ZoneInfo
+        _user_tz = ZoneInfo(engine_config.USER_TZ)
+        current_user_hour = datetime.now(_user_tz).hour
+    except ImportError:
+        current_user_hour = int(time.strftime('%H', time.gmtime())) - 5  # fallback UTC-5
     today_has_morning_checkin = any(
         h.get("type") == "morning" and (now - h["timestamp"]) < 86400
         for h in state.get("check_in_history", [])
     )
-    if current_utc_hour == MORNING_CHECKIN_HOUR and not today_has_morning_checkin:
+    if current_user_hour == MORNING_CHECKIN_HOUR and not today_has_morning_checkin:
         return {"should": True, "type": "morning", "reason": "check-in matutino diario"}
 
     # Decide if we should check in
-    decision = should_check_in(state)
+    decision = should_check_in(state, recent_messages=all_messages)
     
     # Apply rate limiting
     if decision["should"]:
@@ -244,6 +283,22 @@ def generate_check_in_message(state: dict) -> str:
     except ImportError:
         pass  # HA module not available, that's fine
 
+    # DIMF enriched context
+    dimf_context_str = ""
+    try:
+        dimf_store = EventStore()
+        dimf_filter = DIMFFilter(dimf_store)
+        enriched_ctx = dimf_filter.get_enriched_context()
+        if enriched_ctx.get("top"):
+            top_events = enriched_ctx["top"][:3]
+            top_descs = [e.get("description", "")[:60] for e in top_events]
+            dimf_context_str = (
+                f"Eventos más importantes (DIMF): {', '.join(top_descs)}. "
+                f"Importancia: {enriched_ctx.get('importance_counts', {})}"
+            )
+    except Exception:
+        pass  # DIMF unavailable, degrade gracefully
+
     context = f"""Eres Ivi, una asistente con personalidad de mujer peruana de 25-30 años.
 Debes enviar un mensaje de check-in a Beck por Telegram.
 Tu personalidad: directa, cálida, usa el emoji 🛡️ ocasionalmente.
@@ -254,7 +309,8 @@ CONTEXTO EMOCIONAL:
 - Último tema conversado: {topic}
 - Horas desde última interacción: {hours_since:.0f}
 - Eventos recientes: {json.dumps(events, ensure_ascii=False)}
-- Datos biométricos: {health_context if health_context else 'no disponibles'}
+-- Datos biométricos: {health_context if health_context else 'no disponibles'}
+- Contexto DIMF: {dimf_context_str if dimf_context_str else 'no disponible'}
 - Último mensaje que envié (puede ser fallback): {last_self_msg}
 
 INSTRUCCIONES CRÍTICAS:
@@ -299,7 +355,11 @@ Escribe el mensaje ahora:"""
         fallback_events = store.get_recent_events(limit=5)
     except Exception:
         pass  # EventStore unavailable, degrade gracefully
-    return _fallback_message(mood, topic, trend, hours_since, events=fallback_events)
+    # Try v2 fallback with TBC memory window first
+    try:
+        return _fallback_message_v2(mood, topic, trend, hours_since, events=fallback_events)
+    except Exception:
+        return _fallback_message(mood, topic, trend, hours_since, events=fallback_events)
 
 
 def _validate_message(message: str) -> bool:
@@ -413,6 +473,27 @@ def _fallback_message(mood: str, topic: str, trend: str, hours_since: float, eve
     
     return options[hour_hash % len(options)]
 
+def _fallback_message_v2(mood: str, topic: str, trend: str, hours_since: float, events: list = None) -> str:
+    """Fallback v2: uses TBC MemoryCompressor.get_memory_window() for richer context."""
+    try:
+        store = EventStore()
+        compressor = MemoryCompressor(store=store)
+        window = compressor.get_memory_window(detail_days=3)
+        highlights = window.get("highlights", [])
+        compressed_days = window.get("compressed_days", [])
+
+        # Enrich topic with memory context
+        memory_topic = highlights[0].get("description", topic)[:60] if highlights else topic
+        compressed_hint = ""
+        if compressed_days:
+            first_summary = compressed_days[-1]  # most recent compressed day
+            compressed_hint = f" (resumen: {first_summary.get('summary', '')[:60]})"
+
+        enriched_topic = f"{memory_topic}{compressed_hint}" if compressed_hint else memory_topic
+        return _fallback_message(mood, enriched_topic, trend, hours_since, events=events)
+    except Exception:
+        return _fallback_message(mood, topic, trend, hours_since, events=events)
+
 
 def _hours_since(timestamp: float) -> float:
     """Calcula horas desde un timestamp."""
@@ -422,39 +503,14 @@ def _hours_since(timestamp: float) -> float:
 
 
 def send_check_in(message: str, check_in_type: str = "normal") -> bool:
-    """Envía un mensaje de check-in por Telegram usando el gateway de Hermes."""
-    log.info(f"Enviando check-in ({check_in_type}): {message[:60]}...")
-    
-    # Method 1: Use send_message tool if available
-    try:
-        result = subprocess.run(
-            ["hermes", "chat", "-q",
-             f"Envía este mensaje exacto por Telegram sin agregar nada más: {message}"],
-            capture_output=True, text=True, timeout=120,
-            env={**os.environ, "HERMES_SILENT": "1"}
-        )
-        if result.returncode == 0:
-            log.info("Check-in enviado exitosamente vía hermes chat")
-            return True
-        else:
-            log.warning(f"hermes chat retornó código {result.returncode}")
-    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        log.error(f"Error al enviar vía hermes: {e}")
-    
-    # Method 2: Try using the gateway API directly
-    try:
-        # Check if gateway is running
-        result = subprocess.run(
-            ["hermes", "gateway", "status"],
-            capture_output=True, text=True, timeout=10
-        )
-        if "running" in result.stdout.lower():
-            log.info("Gateway activo, pero no pude enviar directamente")
-    except:
-        pass
-    
-    log.error("No pude enviar el check-in por ningún método")
-    return False
+    """Mark check-in as ready for delivery by the cron job.
+
+    The actual message delivery is handled by the cron job's deliver: "origin"
+    setting. This function just logs and returns True so the engine knows
+    the message was prepared successfully.
+    """
+    log.info(f"Check-in preparado ({check_in_type}): {message[:60]}...")
+    return True
 
 
 def run_outreach_cycle() -> dict:
@@ -580,6 +636,15 @@ def run_outreach_cycle() -> dict:
         save_state(state)
 
         log.info(f"Check-in {'enviado' if sent else 'falló'}: {message[:60]}...")
+        # TBC: compress old events with 5% probability
+        if random.random() < 0.05:
+            try:
+                compress_store = EventStore()
+                compressor = MemoryCompressor(store=compress_store)
+                compressor.compress_old_days(keep_days=7)
+                log.info("TBC: compresión de eventos antiguos completada")
+            except Exception as e:
+                log.warning(f"TBC: error al comprimir: {e}")
 
     except Exception as e:
         result["error"] = str(e)

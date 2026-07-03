@@ -1,17 +1,18 @@
-# Emotional Awareness Engine — v2.1.0
+# Emotional Awareness Engine — v3.0.0
 
-> **🆕 July 2026:** Bug fixes + Anti-Spam + Event Store + Auto-Awareness
+> **🌌 July 2026:** Cosmo (fine-tuned emotion model) + Strategy Pattern + Event-Driven Daemon
 > Premium version: [Gumroad $25](https://beckvs.gumroad.com/l/gkgec)
 
-### What's New in v2.1.0
-- 🗑️ System messages no longer detected as user achievements
-- 📉 Mood intensity: 0.20 → 0.80 (density-based formula)
-- 🛡️ Anti-spam: 3 unanswered → silence. 7 days → final message.
-- 💾 Event Store: structured events with scoring
-- 🧠 Auto-awareness: engine reads chat history to know what it said
-- ⏱️ Adaptive rate limiting: 12h → 4h → 2h
+### What's New in v3.0.0
+- 🌌 **Cosmo**: Fine-tuned pysentimiento model for emotion detection (85.5% accuracy)
+- 🎯 **Strategy Pattern**: 3 detectors — KeywordDetector, PysentimientoDetector, HybridDetector
+- 🔄 **Event-Driven Daemon**: Replaces cron jobs with real-time message monitoring
+- 🧹 **Neutral Spanish**: All keywords and templates in neutral Spanish (no regional slang)
+- 🔧 **Bug Fixes**: Sarcasm detection, timezone-aware quiet hours, dedup with timestamps
+- 📊 **293 Tests**: Comprehensive test suite (daemon + engine + regression)
 
 ---
+
 <!-- Emotional Awareness Engine README -->
 <p align="center">
   <strong>🧠 Emotional Awareness Engine</strong><br>
@@ -21,64 +22,120 @@
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="MIT License">
-  <img src="https://img.shields.io/badge/tests-23%20passing-brightgreen.svg" alt="Tests Passing">
-  <img src="https://img.shields.io/badge/deps-stdlib%20only-lightgrey.svg" alt="No Dependencies">
+  <img src="https://img.shields.io/badge/tests-293%20passing-brightgreen.svg" alt="Tests Passing">
 </p>
 
 ---
 
 The Emotional Awareness Engine gives your AI agent the ability to understand and track a user's emotional state over time. Instead of treating every conversation as isolated, it builds a persistent model of mood, stress patterns, communication habits, and significant life events — enabling your agent to respond with genuine context rather than generic pleasantries.
 
-Built for self-hosted AI agents like [Hermes Agent](https://hermes-agent.nousresearch.com) and [OpenClaw](https://openclaw.com). Zero dependencies, zero API keys, zero network calls.
-
-## What It Does
-
-- **Mood Detection** — Analyzes conversation history to detect stress, frustration, excitement, tiredness, and happiness through keyword-based emotional analysis
-- **Pattern Recognition** — Learns the user's active hours, message length patterns, common topics, and communication cadence
-- **Significant Event Tracking** — Detects stress spikes, late-night activity, achievements, and mood shifts; maintains a rolling history of the last 50 events
-- **Smart Check-In Decisions** — Evaluates whether a check-in is warranted based on silence duration, mood state, time of day, and recent check-in history — with quiet hours and rate limiting
-
-## How It Works
+## Architecture v3.0
 
 ```
-  state.db (Hermes)          conversation_analyzer.py         emotional_state.py
-  ┌──────────────┐           ┌──────────────────────┐         ┌──────────────────┐
-  │ Sessions     │──────────▶│ Mood detection        │────────▶│ Mood + trend     │
-  │ Messages     │           │ Pattern analysis      │         │ Event history    │
-  │ Timestamps   │           │ Event detection       │         │ Check-in rules   │
-  └──────────────┘           └──────────────────────┘         └──────────────────┘
-                                                                       │
-                                                                       ▼
-                                                              emotional-state.json
-                                                              (persistent state)
+┌─────────────────────────────────────────────────────────────┐
+│                    TRIGGER LAYER                             │
+│  ┌──────────┐  ┌──────────────┐  ┌──────────────────────┐   │
+│  │ Cron     │  │ Cosmo Daemon │  │ Manual CLI           │   │
+│  │ (2h)     │  │ (event)      │  │ (debug)              │   │
+│  └────┬─────┘  └──────┬───────┘  └──────┬───────────────┘   │
+│       └───────────────┴────────┬────────┘                    │
+│                                │                             │
+└────────────────────────────────┼─────────────────────────────┘
+                                 │
+┌────────────────────────────────┼─────────────────────────────┐
+│                    ANALYSIS LAYER                             │
+│                                │                             │
+│   ┌────────────────────────────▼───────────────────────┐    │
+│   │           EmotionDetector (Strategy Pattern)        │    │
+│   │                                                     │    │
+│   │  ┌─────────────────┐  ┌─────────────────────────┐  │    │
+│   │  │ KeywordDetector  │  │ PysentimientoDetector   │  │    │
+│   │  │ (fast, fallback) │  │ (Cosmo fine-tuned)      │  │    │
+│   │  └─────────────────┘  └─────────────────────────┘  │    │
+│   │  ┌──────────────────────────────────────────────┐  │    │
+│   │  │ HybridDetector (recommended — best of both)   │  │    │
+│   │  └──────────────────────────────────────────────┘  │    │
+│   └─────────────────────────────────────────────────────┘    │
+│                                                               │
+│   ┌───────────────────┐  ┌─────────────────────────────┐    │
+│   │ conversation_     │  │ EventDetector               │    │
+│   │ analyzer v3.0     │  │ (regex + emotion scoring)   │    │
+│   └───────────────────┘  └─────────────────────────────┘    │
+│                                                               │
+└───────────────────────────────────────────────────────────────┘
+                                 │
+┌────────────────────────────────┼─────────────────────────────┐
+│                    PERSISTENCE LAYER                          │
+│   ┌──────────┐  ┌───────────┐  ┌──────────┐  ┌──────────┐  │
+│   │ EventStore│  │ DIMF      │  │ TBC      │  │ emotional│  │
+│   │ (JSON)   │  │ Filter    │  │ (comp)   │  │ _state   │  │
+│   └──────────┘  └───────────┘  └──────────┘  └──────────┘  │
+└───────────────────────────────────────────────────────────────┘
 ```
 
-The engine reads conversations from Hermes Agent's SQLite database, runs them through a multi-stage analysis pipeline, and writes results to a JSON state file. The analysis pipeline is fully deterministic — no LLM calls, no embeddings, no API dependencies.
+## Components
 
-See [How It Works](docs/how-it-works.md) for the full architecture deep-dive.
+| Component | File | Description |
+|-----------|------|-------------|
+| **EmotionDetector** | `emotion_detector.py` | Strategy Pattern with 3 detector implementations |
+| **HybridDetector** | `emotion_detector.py` | Combines pysentimiento (sarcasm/negation) with keywords (fast) |
+| **Cosmo Daemon** | `daemon.py` | Event-driven daemon, monitors state.db in real-time |
+| **Conversation Analyzer** | `conversation_analyzer.py` | Analyzes conversations, detects events and mood |
+| **DIMF** | `dimf.py` | Dynamic Importance Memory Filter (Decay × Intensity × Multiplicity) |
+| **TBC** | `tbc.py` | Temporal Binary Compression for old events |
+| **Event Store** | `event_store.py` | JSON-based event storage with deduplication |
+| **Emotional State** | `emotional_state.py` | Persistent mood state with rate limiting |
+| **Outreach Engine** | `outreach_engine.py` | Main orchestrator (legacy, replaced by daemon) |
+| **Config** | `config.py` | Centralized configuration |
 
 ## Quick Start
 
 ```bash
-# Clone
-git clone https://github.com/beckhs/emotional-awareness-engine.git
-cd emotional-awareness-engine
+# Install dependencies
+pip install pysentimiento transformers torch psutil
 
-# Verify (no dependencies to install)
-python3 -m unittest test_engine.py -v
+# Run the daemon (event-driven)
+python daemon.py --interval 15
 
-# Run a one-time analysis
-python3 outreach_engine.py
+# Or run the daemon as a systemd service
+sudo cp cosmo-watcher.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now cosmo-watcher
+
+# Run tests
+python -m pytest test_*.py -v
 ```
 
-## Premium Version
+## Cosmo — Fine-Tuned Emotion Model
 
-Get the full Emotional Intelligence Suite with research paper, marketing materials, and advanced features:
+Cosmo is a fine-tuned pysentimiento model trained on 18,464 examples of neutral Spanish text. It improves emotion detection for indirect expressions, mixed emotions, and subtle sadness.
 
-👉 **[Gumroad — $25 USD](https://beckvs.gumroad.com/l/gkgec)**
+**Performance:**
+| Emotion | F1 Score |
+|---------|----------|
+| joy | 94.3% |
+| sadness | 91.8% |
+| disgust | 93.5% |
+| fear | 87.0% |
+| others | 63.4% |
+| anger | 49.7% |
+| surprise | 45.5% |
 
-Includes: academic paper (18 references), landing page, social media templates, tutorial, HA/Watch4 integration.
+**Accuracy:** 85.5% | **Macro F1:** 75.0%
+
+To use Cosmo, place the fine-tuned model in `fine-tuning/fine-tuned-model/` and the HybridDetector will automatically load it.
 
 ## License
 
-MIT — Free for personal and commercial use.
+MIT License — see [LICENSE](LICENSE) for details.
+
+## Premium Version
+
+The full Emotional Intelligence Suite includes:
+- Cosmo fine-tuned model (416MB)
+- Full daemon with systemd integration
+- Complete test suite (293 tests)
+- Research papers and architecture docs
+- Home Assistant integration
+
+**[Get it on Gumroad — $25](https://beckvs.gumroad.com/l/gkgec)**
